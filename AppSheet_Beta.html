@@ -3070,7 +3070,7 @@ button.mini-btn[onclick*="viewPerson("] {
             <div class="uv-brand">
                 <div class="uv-brand-mark" aria-hidden="true">A</div>
                 <div class="uv-top-title">
-                    <h1 id="uvPageTitle">1 Tim 2:14</h1>
+                    <h1 id="uvPageTitle">1 Tim 2:4</h1>
                     <p id="uvPageSubtitle">Your field workspace.</p>
                 </div>
             </div>
@@ -9724,6 +9724,60 @@ function uvRenderPersonSearch(query=''){
         : '<div class="uv-person-search-empty">No matching people found.</div>';
     results.classList.add('is-open');
 }
+function uvLandmarkProfile(candidate){
+    const name=String(candidate?.name||'').trim();
+    const text=`${name} ${candidate?.types||''} ${candidate?.query||''} ${candidate?.formattedAddress||''} ${candidate?.vicinity||''}`;
+    const major=/\b(sm city|sm mall|sm supermall|robinsons|ayala|puregold|waltermart|vista mall|savemore|super8|prince hypermart|major hospital|city hospital|medical center|terminal)\b/i.test(text);
+    const everyday=/\b(dali|alfamart|7[- ]?eleven|ministop|uncle john'?s|mercury drug|watsons|jollibee|mcdonald'?s|chowking|mang inasal|starbucks|petron|shell|caltex|phoenix|total|seaoil|market|public market|mall|grocery|supermarket)\b/i.test(text);
+    const civic=/\b(elementary|school|high school|national high|college|university|bridge|barangay hall|city hall|municipal hall|church|chapel|mosque|shrine|temple|park|plaza|monument|hospital|clinic|terminal|station|port|pier|library|museum|police|fire station|covered court|gymnasium|cemetery|resort)\b/i.test(text);
+    const genericBusiness=/\b(store|shop|residence|home|house|apartment|subdivision|village|restaurant|cafe|coffee|bakery|salon|resort)\b/i.test(text);
+    let kind='generic';
+    let bonus=0;
+    if(major){kind='major';bonus=170;}
+    else if(everyday){kind='recognizable';bonus=125;}
+    else if(civic){kind='civic';bonus=105;}
+    else if(genericBusiness){kind='generic';bonus=0;}
+    else if(/\b(landmark|attraction|historic|monument)\b/i.test(text)){kind='local';bonus=90;}
+    return {kind,bonus,major,everyday,civic,genericBusiness};
+}
+
+function uvLandmarkDisplayName(candidate, allCandidates){
+    const name=String(candidate?.name||'Nearest landmark').trim();
+    const sameName=(allCandidates||[]).filter(x=>locationKey(x.name)===locationKey(name));
+    // A unique recognizable place does not need a qualifier.
+    if(sameName.length<=1) return name;
+
+    const candidateBarangay=String(candidate?.barangay||'').trim();
+    const candidateStreet=String(candidate?.street||candidate?.road||'').trim();
+    const candidateVicinity=String(candidate?.vicinity||'').trim();
+    const candidateAddress=String(candidate?.formattedAddress||candidate?.address||'').trim();
+
+    const otherBarangays=new Set(sameName.map(x=>String(x.barangay||'').trim()).filter(Boolean));
+    if(candidateBarangay && otherBarangays.size>1) return `${name} · ${candidateBarangay}`;
+
+    // Prefer an actual road/street when the same landmark name occurs more
+    // than once in the same barangay.
+    const street=candidateStreet || (()=>{
+        const m=candidateAddress.match(/,\s*([^,]+(?:Road|Rd\.?|Street|St\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Drive|Dr\.?)?)\s*,/i);
+        return m?String(m[1]).trim():'';
+    })();
+    if(street) return `${name} · ${street}`;
+
+    // Google vicinity is usually short and human-readable (for example
+    // "Gulod Rd" or "near Mamatid Rd"). Use it only when it is genuinely
+    // different from the landmark's own name.
+    if(candidateVicinity && locationKey(candidateVicinity)!==locationKey(name)){
+        const shortVicinity=candidateVicinity.split(',').slice(0,1).join('').trim();
+        if(shortVicinity) return `${name} · ${shortVicinity}`;
+    }
+
+    // Last-resort deterministic distinction: a nearby recognizable landmark
+    // can identify which duplicate branch the user is referring to.
+    const nearby=(sameName.length>1 ? (allCandidates||[]).filter(x=>x!==candidate && x.distanceKm<=0.45 && locationKey(x.name)!==locationKey(name) && (x.profile?.major||x.profile?.everyday||x.profile?.civic)).sort((a,b)=>a.distanceKm-b.distanceKm)[0] : null);
+    if(nearby) return `${name} · Near ${nearby.name}`;
+    return name;
+}
+
 async function uvFindNearestLandmark(person){
     const lat=clusterMapLat(person), lng=clusterMapLng(person);
     const province=String(person?.province||'').trim();
@@ -9736,8 +9790,7 @@ async function uvFindNearestLandmark(person){
     const seen=new Set();
     const MAX_DISTANCE_KM=1.50;
 
-    const meaningfulNamePattern=/\b(bridge|elementary|school|high school|national high|barangay hall|hall|church|chapel|mosque|shrine|temple|park|plaza|monument|hospital|clinic|market|public market|terminal|station|port|pier|library|museum|government|municipal|city hall|police|fire station|covered court|gymnasium|cemetery|resort|landmark)\b/i;
-    const preferredPattern=/\b(elementary|school|high school|national high|bridge|barangay hall|hall|church|chapel|mosque|park|plaza|monument|hospital|clinic|market|public market|terminal|station|port|pier|library|museum|government|municipal|city hall|police|fire station|covered court|gymnasium|cemetery|resort)\b/i;
+    const meaningfulNamePattern=/\b(bridge|elementary|school|high school|national high|barangay hall|hall|church|chapel|mosque|shrine|temple|park|plaza|monument|hospital|clinic|market|public market|terminal|station|port|pier|library|museum|government|municipal|city hall|police|fire station|covered court|gymnasium|cemetery|resort|landmark|mall|grocery|supermarket|dali|alfamart|7[- ]?eleven|ministop|uncle john|mercury drug|watsons|jollibee|mcdonald|chowking|mang inasal|starbucks|petron|shell|caltex|savemore|puregold|waltermart|robinsons|ayala|vista mall)\b/i;
 
     const addCandidate=(candidate)=>{
         if(!candidate||!String(candidate.name||'').trim()) return;
@@ -9753,13 +9806,13 @@ async function uvFindNearestLandmark(person){
         const key=String(candidate.placeId||`${normalized}|${clat.toFixed(6)}|${clng.toFixed(6)}`);
         if(seen.has(key)) return;
         seen.add(key);
-        const text=`${name} ${candidate.types||''} ${candidate.query||''}`;
-        const preferred=preferredPattern.test(text);
-        candidates.push({...candidate,name,lat:clat,lng:clng,distanceKm,preferred});
+        const profile=uvLandmarkProfile(candidate);
+        const sameBarangay=!!(barangay && locationKey(candidate.barangay||'')===locationKey(barangay));
+        candidates.push({...candidate,name,lat:clat,lng:clng,distanceKm,sameBarangay,profile});
     };
 
-    // 1. Saved Location Detail landmarks remain the first source. These are
-    // already downloaded for the municipality and have stable coordinates.
+    // 1. Saved Location Detail landmarks. These are the best offline source
+    // because they already contain stable coordinates and local names.
     try{
         const detailed=municipality
             ? await offlineGetDetailedLocations(province,municipality).catch(()=>null)
@@ -9770,31 +9823,34 @@ async function uvFindNearestLandmark(person){
             if(!Number.isFinite(ilat)||!Number.isFinite(ilng)) continue;
             addCandidate({
                 name:item.name,lat:ilat,lng:ilng,
+                barangay:item.barangay||'',street:item.street||item.road||'',
+                vicinity:item.vicinity||'',formattedAddress:item.formattedAddress||item.address||'',
                 sameBarangay:!!(barangay&&locationKey(item.barangay||'')===locationKey(barangay)),
                 source:'local',query:item.name
             });
         }
     }catch(error){ console.warn('User View local landmark lookup failed:',error); }
 
-    // 2. Photon/OpenStreetMap fallback. This is intentionally done BEFORE a
-    // large Google Places sweep. It is fast, free, and can return named
-    // schools/bridges/churches that are visibly present on the map even when
-    // Google Places does not return a result.
+    // 2. Photon/OpenStreetMap. Query both civic landmarks and recognizable
+    // everyday brands/places. This is intentionally broad enough to find
+    // Dali/Alfamart/7-Eleven as well as schools and bridges.
     try{
         const bboxSize=0.012;
-        const bbox={
-            west:center.lng-bboxSize,east:center.lng+bboxSize,
-            south:center.lat-bboxSize,north:center.lat+bboxSize
-        };
+        const bbox={west:center.lng-bboxSize,east:center.lng+bboxSize,south:center.lat-bboxSize,north:center.lat+bboxSize};
         const photonQueries=[];
-        if(barangay){
-            photonQueries.push(`${barangay} elementary school`,`${barangay} school`,`${barangay} bridge`,`${barangay} church`);
-        }
-        photonQueries.push('elementary school','school','bridge','church','chapel','barangay hall','park','market','hospital');
+        if(barangay) photonQueries.push(
+            `${barangay} Dali`,`${barangay} Alfamart`,`${barangay} 7-Eleven`,
+            `${barangay} elementary school`,`${barangay} school`,`${barangay} bridge`,`${barangay} church`,`${barangay} market`
+        );
+        photonQueries.push(
+            'Dali','Alfamart','7-Eleven','SM','Robinsons','Puregold','WalterMart','Savemore',
+            'Mercury Drug','Watsons','Jollibee','McDonalds','Petron','Shell','Caltex',
+            'elementary school','school','bridge','church','chapel','barangay hall','park','market','hospital','mall','grocery','supermarket'
+        );
         const photonSeen=new Set();
         for(const query of photonQueries){
             try{
-                const params=new URLSearchParams({q:query,bbox:`${bbox.west},${bbox.south},${bbox.east},${bbox.north}`,limit:'20',lang:'en'});
+                const params=new URLSearchParams({q:query,bbox:`${bbox.west},${bbox.south},${bbox.east},${bbox.north}`,limit:'30',lang:'en'});
                 const response=await fetch(`https://photon.komoot.io/api/?${params.toString()}`,{headers:{Accept:'application/json'}});
                 if(!response.ok) continue;
                 const json=await response.json();
@@ -9809,24 +9865,23 @@ async function uvFindNearestLandmark(person){
                     const key=`${locationKey(name)}|${flat.toFixed(6)}|${flng.toFixed(6)}`;
                     if(photonSeen.has(key)) continue;
                     photonSeen.add(key);
-                    addCandidate({name,lat:flat,lng:flng,source:'photon',query});
+                    addCandidate({
+                        name,lat:flat,lng:flng,source:'photon',query,
+                        barangay:props.district||props.suburb||'',street:props.street||'',
+                        formattedAddress:[props.street,props.city,props.state].filter(Boolean).join(', ')
+                    });
                 }
             }catch(e){ console.warn('Photon landmark query failed:',query,e); }
         }
     }catch(error){ console.warn('User View Photon landmark lookup failed:',error); }
 
-    // 3. Google reverse geocoding can return an establishment/point of
-    // interest directly at or immediately beside the person's coordinates.
-    // This is especially useful when the map visibly shows a school but a
-    // Places text search does not return it.
+    // 3. Google reverse geocoding for a POI immediately at the person's point.
     try{
         if(!googleGeocoder && window.google?.maps) googleGeocoder=new google.maps.Geocoder();
         if(googleGeocoder){
             for(const resultType of ['point_of_interest','establishment']){
                 try{
-                    const response=await googleGeocoder.geocode({
-                        location:center,region:'PH',resultType:[resultType],fulfillOnZeroResults:true
-                    });
+                    const response=await googleGeocoder.geocode({location:center,region:'PH',resultType:[resultType],fulfillOnZeroResults:true});
                     for(const r of (response?.results||[])){
                         const name=String(r?.name||'').trim() || String(r?.address_components?.find(c=>c.types?.includes('establishment'))?.long_name||'').trim();
                         if(!name) continue;
@@ -9836,42 +9891,50 @@ async function uvFindNearestLandmark(person){
                         if(!Number.isFinite(rlat)||!Number.isFinite(rlng)) continue;
                         const text=`${name} ${r.formatted_address||''} ${(r.types||[]).join(' ')}`;
                         if(!meaningfulNamePattern.test(text)) continue;
-                        addCandidate({name,lat:rlat,lng:rlng,source:'google-geocoder',query:resultType,placeId:r.place_id});
+                        const street=r.address_components?.find(c=>c.types?.includes('route'))?.long_name||'';
+                        const brgyComp=r.address_components?.find(c=>c.types?.some(t=>['sublocality','sublocality_level_1','neighborhood'].includes(t)))?.long_name||'';
+                        addCandidate({name,lat:rlat,lng:rlng,source:'google-geocoder',query:resultType,placeId:r.place_id,types:(r.types||[]).join(' '),street,barangay:brgyComp,formattedAddress:r.formatted_address||''});
                     }
                 }catch(e){ console.warn('Google landmark reverse lookup failed:',resultType,e); }
             }
         }
     }catch(error){ console.warn('User View Google geocoder landmark lookup failed:',error); }
 
-    // 4. Only now use Google Places, with a small number of highly targeted
-    // searches. The previous implementation made dozens of sequential calls,
-    // which could leave the UI stuck on "Finding nearest landmark…".
+    // 4. Targeted Google Places searches for recognizable brands and civic
+    // landmarks. Keep the list finite so the UI cannot hang indefinitely.
     try{
         if(window.google?.maps?.places?.PlacesService){
             const exactQueries=[];
             if(barangay) exactQueries.push(
+                `${barangay} Dali, ${municipality}`,
+                `${barangay} Alfamart, ${municipality}`,
+                `${barangay} 7-Eleven, ${municipality}`,
                 `${barangay} Elementary School, ${municipality}`,
                 `${barangay} School, ${municipality}`,
                 `${barangay} Bridge, ${municipality}`,
                 `${barangay} Church, ${municipality}`,
-                `${barangay} Barangay Hall, ${municipality}`
+                `${barangay} Market, ${municipality}`
             );
-            exactQueries.push('elementary school','school','bridge','church','barangay hall');
-
+            exactQueries.push(
+                'Dali','Alfamart','7-Eleven','SM','Robinsons','Puregold','WalterMart','Savemore',
+                'Mercury Drug','Watsons','Jollibee','McDonald\'s','Petron','Shell','Caltex',
+                'elementary school','school','bridge','church','barangay hall','market','mall','grocery'
+            );
             for(const query of exactQueries){
-                const rows=await googleTextSearchPlaces(query,center.lat,center.lng,1800,{maxPages:1,pageDelayMs:500});
+                const rows=await googleTextSearchPlaces(query,center.lat,center.lng,2200,{maxPages:1,pageDelayMs:350});
                 for(const r of rows){
                     const name=String(r?.name||'').trim();
                     const rlat=Number(r?._lat), rlng=Number(r?._lng);
                     if(!name||!Number.isFinite(rlat)||!Number.isFinite(rlng)) continue;
                     const types=Array.isArray(r?.types)?r.types:[];
-                    const text=`${name} ${types.join(' ')} ${query}`;
+                    const text=`${name} ${types.join(' ')} ${query} ${r?.vicinity||''} ${r?.formatted_address||''}`;
                     if(!meaningfulNamePattern.test(text)) continue;
-                    addCandidate({name,lat:rlat,lng:rlng,source:'google-places',query,types:types.join(' '),placeId:r.place_id});
+                    addCandidate({
+                        name,lat:rlat,lng:rlng,source:'google-places',query,types:types.join(' '),
+                        placeId:r.place_id,barangay:barangay||'',street:r?.vicinity||'',
+                        vicinity:r?.vicinity||'',formattedAddress:r?.formatted_address||''
+                    });
                 }
-                // If we already have a very close named landmark, stop. This
-                // prevents unnecessary API calls and makes the UI responsive.
-                if(candidates.some(c=>c.distanceKm<=0.12 && c.preferred)) break;
             }
         }
     }catch(error){ console.warn('User View Google Places landmark lookup failed:',error); }
@@ -9881,19 +9944,29 @@ async function uvFindNearestLandmark(person){
         return null;
     }
 
-    // Distance is the primary rule. A landmark category is only a tie-breaker,
-    // so a school 20m away beats a bridge 500m away.
+    // Recognizable landmarks are preferred over arbitrary nearby businesses,
+    // but distance remains the dominant signal. A very close school/bridge
+    // should beat a distant Dali, while a Dali 90m away should beat an
+    // unhelpful private residence 30m away.
+    for(const candidate of candidates){
+        const distanceM=candidate.distanceKm*1000;
+        const profile=candidate.profile||uvLandmarkProfile(candidate);
+        const sameBarangayBonus=candidate.sameBarangay?25:0;
+        const genericPenalty=profile.genericBusiness && !profile.major && !profile.everyday && !profile.civic ? 55:0;
+        candidate.rankScore=distanceM - profile.bonus - sameBarangayBonus + genericPenalty;
+    }
+
     candidates.sort((a,b)=>{
-        const d=a.distanceKm-b.distanceKm;
-        if(Math.abs(d)>0.03) return d;
-        if(a.sameBarangay!==b.sameBarangay) return a.sameBarangay?-1:1;
-        if(a.preferred!==b.preferred) return a.preferred?-1:1;
+        if(a.rankScore!==b.rankScore) return a.rankScore-b.rankScore;
+        if(a.distanceKm!==b.distanceKm) return a.distanceKm-b.distanceKm;
         return String(a.name).localeCompare(String(b.name));
     });
 
     const best=candidates[0];
-    console.info('User View nearest landmark selected:',best.name,best.distanceKm,'km',best.source);
-    return best;
+    const displayName=uvLandmarkDisplayName(best,candidates);
+    const result={...best,displayName};
+    console.info('User View recognizable landmark selected:',displayName,'distance:',best.distanceKm,'km','kind:',best.profile?.kind,'score:',best.rankScore,'source:',best.source);
+    return result;
 }
 
 function uvRenderSelectedPersonLandmark(personId,landmark){
@@ -9910,7 +9983,7 @@ function uvRenderSelectedPersonLandmark(personId,landmark){
         el.className='uv-selected-landmark';
         selected.appendChild(el);
     }
-    el.textContent=String(landmark.name||'Nearest landmark');
+    el.textContent=String(landmark.displayName||landmark.name||'Nearest landmark');
 }
 
 async function uvSelectVisitPerson(id){
@@ -10190,7 +10263,7 @@ function uvShowScreen(screen){
     document.querySelectorAll('.uv-nav-btn').forEach(btn=>btn.classList.remove('uv-nav-active'));
     const nav={home:'uvNavHome',territory:'uvNavTerritory',settings:'uvNavSettings'}[screen]||'uvNavHome';
     document.getElementById(nav)?.classList.add('uv-nav-active');
-    const title={home:['1 Tim 2:14','Your field workspace.'],territory:['Territory','Your territory workspace.'],settings:['Settings','Manage the test workspace view.']}[screen]||['Home','Your field workspace.'];
+    const title={home:['1 Tim 2:4','Your field workspace.'],territory:['Territory','Your territory workspace.'],settings:['Settings','Manage the test workspace view.']}[screen]||['Home','Your field workspace.'];
     const titleEl=document.getElementById('uvPageTitle');
     const subEl=document.getElementById('uvPageSubtitle');
     if(titleEl) titleEl.textContent=title[0];
